@@ -42,7 +42,7 @@ def authenticate_drive():
 col1, col2, col3 = st.columns([1, 4, 1])
 
 with col2:
-    img_file = st.camera_input("📸 터프그래스 사진 촬영 (Click to Capture)")
+    img_file = st.camera_input("📸 (Click to Capture)")
 
 # 사진이 찍히면 실행
 if img_file is not None:
@@ -86,8 +86,8 @@ if img_file is not None:
             ).execute()
             
             # 7. 성공 메시지 및 효과
-            st.success(f"✅ 저장 완료! (File: {filename})")
+            st.success(f"✅ Save Done! (File: {filename})")
             st.balloons() # 풍선 효과 🎉
             
         except Exception as e:
-            st.error(f"❌ 업로드 실패: {e}")
+            st.error(f"❌ Fail: {e}")
