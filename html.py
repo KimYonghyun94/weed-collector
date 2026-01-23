@@ -21,7 +21,7 @@ st.set_page_config(
 # 2. 예쁜 헤더 (HTML 사용)
 st.markdown("""
     <h1 style='text-align: center; color: #2E8B57;'>
-        🌿 GWU Turfgrass Data Collector
+        🌿 USDA FNPRU Weed Data Collector
     </h1>
     <p style='text-align: center; color: gray;'>
         Computer Vision Research Data Acquisition System
