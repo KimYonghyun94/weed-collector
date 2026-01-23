@@ -8,7 +8,7 @@ import io
 # ==========================================
 # 설정 부분 (여기만 수정하세요)
 # 구글 드라이브 폴더 주소창 뒤에 있는 ID를 복사해서 아래에 넣으세요
-PARENT_FOLDER_ID = "1zNu4c65H0_h4bN8Sd6R-YrU9Yt-Gh64a"
+PARENT_FOLDER_ID = "12WeFmWCJ1RJE-kAzZdzeetp6Hqc32IcX"
 # ==========================================
 
 # 구글 드라이브 인증 함수
