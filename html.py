@@ -45,7 +45,8 @@ if img_file is not None:
         file = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
         
         st.success(f"구글 드라이브 저장 완료! (File ID: {file.get('id')})")
