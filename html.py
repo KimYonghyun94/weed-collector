@@ -53,14 +53,14 @@ def slugify(text: str, max_len: int = 40) -> str:
 # -------------------------
 # 옵션 UI (카메라 위에 배치)
 # -------------------------
-with st.expander("⚙️ Turf Setting", expanded=True):
+with st.expander("Turf Setting", expanded=True):
     turf_setting = st.selectbox(
         "Select Turf Setting",
         ["Putting green", "Tees", "Fairway", "Rough"],
         index=0
     )
 
-with st.expander("⚙️ Grass Type", expanded=True):
+with st.expander("Turfgrass Type", expanded=True):
     grass_type = st.selectbox(
         "Select Grass Type",
         ["Bent", "KB", "Bermuda", "Poa", "Other"],
@@ -70,7 +70,7 @@ with st.expander("⚙️ Grass Type", expanded=True):
     if grass_type == "Other":
         grass_other = st.text_input("If Other, type grass name (optional)", value="")
 
-with st.expander("✍️ Weed Name", expanded=True):
+with st.expander("Weed Name", expanded=True):
     weed_name = st.text_input("Type Weed Name", value="", placeholder="e.g., crabgrass")
 
 st.write("---")
