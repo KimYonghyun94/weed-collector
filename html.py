@@ -10,12 +10,8 @@ import os
 import threading
 from typing import Optional
 
-# WebRTC (HD capture) - optional import (없으면 WebRTC 탭 숨김)
-try:
-    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
-    WEBRTC_AVAILABLE = True
-except Exception:
-    WEBRTC_AVAILABLE = False
+# WebRTC (HD capture)
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ==========================================
 # 설정 부분
@@ -38,6 +34,7 @@ st.markdown("""
     <hr>
 """, unsafe_allow_html=True)
 
+
 # -------------------------
 # 3-shot height settings
 # -------------------------
@@ -46,6 +43,7 @@ HEIGHTS = [
     ("50 cm", "H50cm"),
     ("20 cm", "H20cm"),
 ]
+HEIGHT_MAP = dict(HEIGHTS)
 
 def init_session():
     if "capture_set_ts" not in st.session_state:
@@ -59,6 +57,7 @@ def init_session():
 
 init_session()
 
+
 # -------------------------
 # Google Drive helpers
 # -------------------------
@@ -69,7 +68,8 @@ def authenticate_drive():
     )
     return build("drive", "v3", credentials=creds)
 
-def slugify(text: str, max_len: int = 50) -> str:
+
+def slugify(text: str, max_len: int = 40) -> str:
     if text is None:
         return "NA"
     text = text.strip()
@@ -78,6 +78,7 @@ def slugify(text: str, max_len: int = 50) -> str:
     text = text.replace(" ", "_")
     text = re.sub(r"[^A-Za-z0-9_\-]+", "", text)
     return text[:max_len] if len(text) > max_len else text
+
 
 def guess_ext(mimetype: str, original_name: Optional[str] = None) -> str:
     mt = (mimetype or "").lower()
@@ -93,6 +94,7 @@ def guess_ext(mimetype: str, original_name: Optional[str] = None) -> str:
             return ext.lstrip(".").lower()
     return "jpg"
 
+
 def make_filename(
     turf_setting: str,
     grass_type: str,
@@ -104,28 +106,39 @@ def make_filename(
     original_name: Optional[str] = None,
 ) -> str:
     turf_part = slugify(turf_setting.replace(" ", ""))
+
     if grass_type == "Other" and grass_other.strip():
         grass_part = slugify(f"Other_{grass_other}")
     else:
         grass_part = slugify(grass_type)
+
     weed_part = slugify(weed_name)
+
     ext = guess_ext(mimetype, original_name)
-    # 높이 태그 + 세트 timestamp 고정
     return f"{turf_part}_{grass_part}_{weed_part}_{height_tag}_{set_timestamp}.{ext}"
 
+
 def try_get_image_size(image_bytes: bytes):
+    """PIL로 열릴 때만 해상도 표시. (HEIC 등은 환경에 따라 실패 가능)"""
     try:
         img = Image.open(io.BytesIO(image_bytes))
         return img, img.size[0], img.size[1]
     except Exception:
         return None, None, None
 
+
 def upload_bytes_to_drive(image_bytes: bytes, mimetype: str, filename: str):
     service = authenticate_drive()
     buffer = io.BytesIO(image_bytes)
     buffer.seek(0)
-    file_metadata = {"name": filename, "parents": [PARENT_FOLDER_ID]}
+
+    file_metadata = {
+        "name": filename,
+        "parents": [PARENT_FOLDER_ID],
+    }
+
     media = MediaIoBaseUpload(buffer, mimetype=mimetype)
+
     service.files().create(
         body=file_metadata,
         media_body=media,
@@ -133,18 +146,12 @@ def upload_bytes_to_drive(image_bytes: bytes, mimetype: str, filename: str):
         supportsAllDrives=True
     ).execute()
 
+
 # -------------------------
-# Capture set UI (height selector + progress)
+# 3-shot progress UI (상단)
 # -------------------------
 st.subheader("📏 3-shot Capture Set (1m / 50cm / 20cm)")
-height_label = st.radio(
-    "Select height for this shot",
-    [h[0] for h in HEIGHTS],
-    horizontal=True
-)
-height_tag = dict(HEIGHTS)[height_label]
 
-# progress display
 cols = st.columns(3)
 for i, (lbl, tag) in enumerate(HEIGHTS):
     done = tag in st.session_state.height_captures
@@ -161,9 +168,10 @@ with c_reset:
         st.session_state.webrtc_last_mime = None
         st.success("Reset done.")
 with c_hint:
-    st.caption("각 높이에서 한 장씩 저장한 뒤, 아래의 Upload ALL 3 버튼으로 3장을 한 번에 업로드하세요.")
+    st.caption("각 탭에서 사진 찍은 뒤, 바로 아래에 있는 거리(1m/50cm/20cm) 버튼을 선택하고 Save 하세요.")
 
 st.write("---")
+
 
 # -------------------------
 # 옵션 UI
@@ -215,6 +223,7 @@ with st.expander("Weed Name", expanded=True):
     if weed_selected == "Other":
         weed_other = st.text_input("If Other, type weed name", value="", placeholder="e.g., unknown_weed")
 
+# 파일명에 들어갈 weed_name 최종값
 if weed_selected == "Other" and weed_other.strip():
     weed_name = f"Other_{weed_other.strip()}"
 else:
@@ -222,10 +231,11 @@ else:
 
 st.write("---")
 
+
 # -------------------------
 # helper: store capture for selected height
 # -------------------------
-def save_shot_for_height(image_bytes: bytes, mimetype: str, original_name: Optional[str]):
+def save_shot_for_height(height_tag: str, image_bytes: bytes, mimetype: str, original_name: Optional[str]):
     # 세트 timestamp가 없으면, 첫 저장 시점에 고정
     if st.session_state.capture_set_ts is None:
         st.session_state.capture_set_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -236,16 +246,54 @@ def save_shot_for_height(image_bytes: bytes, mimetype: str, original_name: Optio
         "original_name": original_name,
     }
 
-# -------------------------
-# Tabs
-# -------------------------
-tab_names = ["📷 Streamlit Camera", "⬆️ Upload (High-res)"]
-if WEBRTC_AVAILABLE:
-    tab_names.append("🎥 WebRTC (HD Capture)")
-tabs = st.tabs(tab_names)
 
-# 1) Streamlit camera_input
-with tabs[0]:
+def height_picker_ui(key_suffix: str):
+    """사진/업로드 바로 아래에서 거리 선택하도록 UI 제공"""
+    st.markdown("#### 📌 Select distance for this photo")
+    chosen = st.radio(
+        "Distance",
+        [h[0] for h in HEIGHTS],
+        horizontal=True,
+        key=f"distance_{key_suffix}"
+    )
+    return chosen, HEIGHT_MAP[chosen]
+
+
+# -------------------------
+# WebRTC Video Processor
+# -------------------------
+class HDVideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._latest_bgr = None  # numpy array (bgr24)
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        with self._lock:
+            self._latest_bgr = img
+        return frame
+
+    def get_latest_bgr(self):
+        with self._lock:
+            if self._latest_bgr is None:
+                return None
+            return self._latest_bgr.copy()
+
+
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+
+# -------------------------
+# 입력 방식: 탭 3개
+# -------------------------
+tab_cam, tab_upload, tab_webrtc = st.tabs(
+    ["📷 Streamlit Camera", "⬆️ Upload (High-res)", "🎥 WebRTC (HD Capture)"]
+)
+
+# 1) Streamlit 기본 camera_input
+with tab_cam:
     col1, col2, col3 = st.columns([1, 4, 1])
     with col2:
         cam_file = st.camera_input("📸 (Click to Capture)")
@@ -258,20 +306,23 @@ with tabs[0]:
         if img is not None:
             st.image(img, use_container_width=True)
             c1, c2 = st.columns(2)
-            c1.metric("Width", f"{w} px")
-            c2.metric("Height", f"{h} px")
+            c1.metric(label="Width", value=f"{w} px")
+            c2.metric(label="Height", value=f"{h} px")
         else:
-            st.warning("미리보기/해상도 표시가 이 파일 형식에서는 지원되지 않을 수 있어요.")
+            st.warning("미리보기/해상도 표시가 이 파일 형식에서는 지원되지 않을 수 있어요. 업로드는 가능합니다.")
 
-        if st.button(f"✅ Save this shot for {height_label}", key="btn_save_cam"):
-            save_shot_for_height(image_bytes, mimetype, cam_file.name)
+        # ✅ 거리 버튼을 여기(아래)로 이동
+        height_label, height_tag = height_picker_ui("cam")
+
+        if st.button(f"✅ Save this shot ({height_label})", key="btn_save_cam"):
+            save_shot_for_height(height_tag, image_bytes, mimetype, cam_file.name)
             st.success(f"Saved for {height_label} ({height_tag}).")
 
-# 2) file_uploader (high-res)
-with tabs[1]:
+# 2) 고해상도 원본 업로드: file_uploader
+with tab_upload:
     up_file = st.file_uploader(
         "Upload a photo (Phone camera original recommended)",
-        type=None,
+        type=None,  # 모든 확장자 허용(HEIC 등도)
         accept_multiple_files=False
     )
 
@@ -283,85 +334,73 @@ with tabs[1]:
         if img is not None:
             st.image(img, use_container_width=True)
             c1, c2 = st.columns(2)
-            c1.metric("Width", f"{w} px")
-            c2.metric("Height", f"{h} px")
+            c1.metric(label="Width", value=f"{w} px")
+            c2.metric(label="Height", value=f"{h} px")
         else:
-            st.warning("미리보기/해상도 표시가 이 파일 형식에서는 지원되지 않을 수 있어요(예: HEIC).")
+            st.warning("미리보기/해상도 표시가 이 파일 형식에서는 지원되지 않을 수 있어요(예: HEIC). 업로드는 가능합니다.")
 
-        if st.button(f"✅ Save this upload for {height_label}", key="btn_save_upload"):
-            save_shot_for_height(image_bytes, mimetype, up_file.name)
+        # ✅ 거리 버튼을 여기(아래)로 이동
+        height_label, height_tag = height_picker_ui("upload")
+
+        if st.button(f"✅ Save this upload ({height_label})", key="btn_save_upload"):
+            save_shot_for_height(height_tag, image_bytes, mimetype, up_file.name)
             st.success(f"Saved for {height_label} ({height_tag}).")
 
-# 3) WebRTC HD capture
-if WEBRTC_AVAILABLE:
-    class HDVideoProcessor(VideoProcessorBase):
-        def __init__(self):
-            self._lock = threading.Lock()
-            self._latest_bgr = None
+# 3) WebRTC HD 캡처
+with tab_webrtc:
+    st.caption("HD(ideal 1920x1080)로 카메라를 요청합니다. 브라우저/디바이스가 지원하는 범위 내에서 적용돼요.")
 
-        def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            with self._lock:
-                self._latest_bgr = img
-            return frame
-
-        def get_latest_bgr(self):
-            with self._lock:
-                return None if self._latest_bgr is None else self._latest_bgr.copy()
-
-    RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-
-    with tabs[2]:
-        st.caption("HD(ideal 1920x1080)로 카메라를 요청합니다. 브라우저/디바이스 지원 범위 내에서 적용돼요.")
-
-        webrtc_ctx = webrtc_streamer(
-            key="webrtc_hd",
-            video_processor_factory=HDVideoProcessor,
-            rtc_configuration=RTC_CONFIG,
-            media_stream_constraints={
-                "video": {
-                    "width": {"ideal": 1920},
-                    "height": {"ideal": 1080},
-                    "frameRate": {"ideal": 30, "max": 60},
-                    "facingMode": "environment",
-                },
-                "audio": False,
+    webrtc_ctx = webrtc_streamer(
+        key="webrtc_hd",
+        video_processor_factory=HDVideoProcessor,
+        rtc_configuration=RTC_CONFIG,
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 1920},
+                "height": {"ideal": 1080},
+                "frameRate": {"ideal": 30, "max": 60},
+                "facingMode": "environment",
             },
-            async_processing=True,
-        )
+            "audio": False,
+        },
+        async_processing=True,
+    )
 
-        if st.button("📸 Capture frame (HD)", key="btn_capture_webrtc"):
-            if webrtc_ctx.video_processor is None:
-                st.warning("카메라가 아직 시작되지 않았어요.")
+    if st.button("📸 Capture frame (HD)", key="btn_capture_webrtc"):
+        if webrtc_ctx.video_processor is None:
+            st.warning("카메라가 아직 시작되지 않았어요.")
+        else:
+            bgr = webrtc_ctx.video_processor.get_latest_bgr()
+            if bgr is None:
+                st.warning("아직 프레임이 없습니다. 카메라가 뜬 뒤 잠시 후 다시 눌러주세요.")
             else:
-                bgr = webrtc_ctx.video_processor.get_latest_bgr()
-                if bgr is None:
-                    st.warning("아직 프레임이 없습니다. 카메라가 뜬 뒤 잠시 후 다시 눌러주세요.")
-                else:
-                    rgb = bgr[:, :, ::-1]
-                    img = Image.fromarray(rgb)
+                rgb = bgr[:, :, ::-1]
+                img = Image.fromarray(rgb)
 
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=95)
-                    st.session_state.webrtc_last_bytes = buf.getvalue()
-                    st.session_state.webrtc_last_mime = "image/jpeg"
-                    st.success("Frame captured. Now you can save it for the selected height.")
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=95)
+                st.session_state["webrtc_captured_bytes"] = buf.getvalue()
+                st.session_state["webrtc_captured_mime"] = "image/jpeg"
+                st.success("Captured. 아래에서 거리 선택 후 Save 하세요.")
 
-        if st.session_state.webrtc_last_bytes is not None:
-            img, w, h = try_get_image_size(st.session_state.webrtc_last_bytes)
-            if img is not None:
-                st.image(img, use_container_width=True)
-                c1, c2 = st.columns(2)
-                c1.metric("Width", f"{w} px")
-                c2.metric("Height", f"{h} px")
+    if "webrtc_captured_bytes" in st.session_state:
+        image_bytes = st.session_state["webrtc_captured_bytes"]
+        mimetype = st.session_state.get("webrtc_captured_mime", "image/jpeg")
 
-            if st.button(f"✅ Save this frame for {height_label}", key="btn_save_webrtc_frame"):
-                save_shot_for_height(
-                    st.session_state.webrtc_last_bytes,
-                    st.session_state.webrtc_last_mime or "image/jpeg",
-                    "webrtc.jpg"
-                )
-                st.success(f"Saved for {height_label} ({height_tag}).")
+        img, w, h = try_get_image_size(image_bytes)
+        if img is not None:
+            st.image(img, use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric(label="Width", value=f"{w} px")
+            c2.metric(label="Height", value=f"{h} px")
+
+        # ✅ 거리 버튼을 여기(아래)로 이동
+        height_label, height_tag = height_picker_ui("webrtc")
+
+        if st.button(f"✅ Save this frame ({height_label})", key="btn_save_webrtc_frame"):
+            save_shot_for_height(height_tag, image_bytes, mimetype, "webrtc.jpg")
+            st.success(f"Saved for {height_label} ({height_tag}).")
+
 
 # -------------------------
 # Upload ALL 3 shots
@@ -405,6 +444,10 @@ else:
                 st.session_state.height_captures = {}
                 st.session_state.webrtc_last_bytes = None
                 st.session_state.webrtc_last_mime = None
+                if "webrtc_captured_bytes" in st.session_state:
+                    del st.session_state["webrtc_captured_bytes"]
+                if "webrtc_captured_mime" in st.session_state:
+                    del st.session_state["webrtc_captured_mime"]
 
             except Exception as e:
                 st.error(f"❌ Fail: {e}")
