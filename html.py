@@ -36,11 +36,6 @@ def authenticate_drive():
     return build('drive', 'v3', credentials=creds)
 
 def slugify(text: str, max_len: int = 40) -> str:
-    """
-    파일명 안전하게 만들기:
-    - 공백/특수문자 정리
-    - 영문/숫자/언더스코어/하이픈만 남김
-    """
     if text is None:
         return "NA"
     text = text.strip()
@@ -51,7 +46,7 @@ def slugify(text: str, max_len: int = 40) -> str:
     return text[:max_len] if len(text) > max_len else text
 
 # -------------------------
-# 옵션 UI (카메라 위에 배치)
+# 옵션 UI
 # -------------------------
 with st.expander("Turf Setting", expanded=True):
     turf_setting = st.selectbox(
@@ -86,11 +81,10 @@ with col2:
 # 사진이 찍히면 실행
 # -------------------------
 if img_file is not None:
-    # 이미지 열기
+    # 이미지 열기 (정보 표시용)
     image = Image.open(img_file)
     width, height = image.size
 
-    # 결과 보여주기
     st.write("---")
     c1, c2 = st.columns(2)
     with c1:
@@ -98,9 +92,8 @@ if img_file is not None:
     with c2:
         st.metric(label="Height", value=f"{height} px")
 
-    # 파일명 구성 요소 정리
-    turf_part = slugify(turf_setting.replace(" ", ""))  # Putting green -> Puttinggreen 느낌 싫으면 아래처럼 바꿔도 됨
-    # turf_part = slugify(turf_setting)  # 공백은 _로
+    # 파일명 구성 요소
+    turf_part = slugify(turf_setting.replace(" ", ""))
 
     if grass_type == "Other" and grass_other.strip():
         grass_part = slugify(f"Other_{grass_other}")
@@ -109,20 +102,21 @@ if img_file is not None:
 
     weed_part = slugify(weed_name)
 
+    # 원본 mimetype 기준으로 확장자 결정 (대부분 image/jpeg)
+    mimetype = img_file.type or "image/jpeg"
+    ext = "jpg" if "jpeg" in mimetype else ("png" if "png" in mimetype else "jpg")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{turf_part}_{grass_part}_{weed_part}_{timestamp}.jpg"
+    filename = f"{turf_part}_{grass_part}_{weed_part}_{timestamp}.{ext}"
 
     st.info(f"📄 File name preview: **{filename}**")
 
-    # 업로드 진행
     with st.spinner("구글 드라이브로 전송 중입니다... ☁️"):
         try:
             service = authenticate_drive()
 
-            # 항상 JPEG로 저장(일관된 확장자/포맷)
-            buffer = io.BytesIO()
-            image_rgb = image.convert("RGB")
-            image_rgb.save(buffer, format="JPEG", quality=95)
+            # ✅ 핵심: 원본 바이트 그대로 업로드 (재압축/리사이즈 없음)
+            buffer = io.BytesIO(img_file.getvalue())
             buffer.seek(0)
 
             file_metadata = {
@@ -130,7 +124,7 @@ if img_file is not None:
                 "parents": [PARENT_FOLDER_ID],
             }
 
-            media = MediaIoBaseUpload(buffer, mimetype="image/jpeg")
+            media = MediaIoBaseUpload(buffer, mimetype=mimetype)
 
             service.files().create(
                 body=file_metadata,
@@ -140,7 +134,7 @@ if img_file is not None:
             ).execute()
 
             st.success(f"✅ Save Done! (File: {filename})")
-            st.balloons()
+            # ❌ st.balloons() 제거
 
         except Exception as e:
             st.error(f"❌ Fail: {e}")
