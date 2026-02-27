@@ -7,15 +7,7 @@ from PIL import Image
 import io
 import re
 import os
-import threading
 from typing import Optional
-
-# WebRTC (HD capture) - optional import (app won't crash if missing)
-try:
-    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
-    WEBRTC_AVAILABLE = True
-except Exception:
-    WEBRTC_AVAILABLE = False
 
 # ==========================================
 # Settings
@@ -63,10 +55,6 @@ def init_session():
         st.session_state.capture_set_ts = None  # fixed timestamp for the 3-shot set
     if "height_captures" not in st.session_state:
         st.session_state.height_captures = {}   # {height_tag: {bytes, mimetype, original_name}}
-    if "webrtc_captured_bytes" not in st.session_state:
-        st.session_state.webrtc_captured_bytes = None
-    if "webrtc_captured_mime" not in st.session_state:
-        st.session_state.webrtc_captured_mime = None
 
 init_session()
 
@@ -147,30 +135,6 @@ def upload_bytes_to_drive(image_bytes: bytes, mimetype: str, filename: str):
     ).execute()
 
 # -------------------------
-# 3-shot progress UI (top)
-# -------------------------
-st.subheader("📏 3-shot Capture Set (1 m / 50 cm / 20 cm)")
-
-cols = st.columns(3)
-for i, (lbl, tag) in enumerate(HEIGHTS):
-    done = tag in st.session_state.height_captures
-    with cols[i]:
-        st.write(f"**{lbl}**")
-        st.write("✅ Saved" if done else "⬜ Not yet")
-
-c_reset, c_hint = st.columns([1, 3])
-with c_reset:
-    if st.button("Reset this 3-shot set"):
-        st.session_state.capture_set_ts = None
-        st.session_state.height_captures = {}
-        st.session_state.webrtc_captured_bytes = None
-        st.session_state.webrtc_captured_mime = None
-        st.success("Reset completed.")
-with c_hint:
-    st.caption("After capturing/uploading a photo, select the distance below and press Save.")
-st.write("---")
-
-# -------------------------
 # Options UI
 # -------------------------
 with st.expander("Turf Setting", expanded=True):
@@ -228,7 +192,7 @@ else:
 st.write("---")
 
 # -------------------------
-# Save helper + distance picker (moved below images)
+# Save helper + distance picker (below images)
 # -------------------------
 def save_shot_for_height(height_tag: str, image_bytes: bytes, mimetype: str, original_name: Optional[str]):
     # Fix set timestamp on first save
@@ -252,35 +216,9 @@ def height_picker_ui(key_suffix: str):
     return chosen, HEIGHT_MAP[chosen]
 
 # -------------------------
-# WebRTC video processor
+# Tabs (WebRTC removed)
 # -------------------------
-if WEBRTC_AVAILABLE:
-    class HDVideoProcessor(VideoProcessorBase):
-        def __init__(self):
-            self._lock = threading.Lock()
-            self._latest_bgr = None
-
-        def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            with self._lock:
-                self._latest_bgr = img
-            return frame
-
-        def get_latest_bgr(self):
-            with self._lock:
-                return None if self._latest_bgr is None else self._latest_bgr.copy()
-
-    RTC_CONFIG = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-
-# -------------------------
-# Tabs
-# -------------------------
-tab_names = ["📷 Streamlit Camera", "⬆️ Upload (High-res)"]
-if WEBRTC_AVAILABLE:
-    tab_names.append("🎥 WebRTC (HD Capture)")
-tabs = st.tabs(tab_names)
+tabs = st.tabs(["📷 Streamlit Camera", "⬆️ Upload (High-res)"])
 
 # 1) Streamlit camera_input
 with tabs[0]:
@@ -311,8 +249,8 @@ with tabs[0]:
 with tabs[1]:
     up_files = st.file_uploader(
         "Upload photo(s) (phone camera originals recommended)",
-        type=None,                  # allow all (HEIC included)
-        accept_multiple_files=True  # ✅ multi-select
+        type=None,
+        accept_multiple_files=True
     )
 
     if up_files:
@@ -346,66 +284,33 @@ with tabs[1]:
                     save_shot_for_height(height_tag, image_bytes, mimetype, f.name)
                     st.success(f"Saved: {f.name} → {height_label}")
 
-# 3) WebRTC HD capture
-if WEBRTC_AVAILABLE:
-    with tabs[2]:
-        st.caption("Requests HD (ideal 1920×1080). Actual resolution depends on browser/device support.")
-
-        webrtc_ctx = webrtc_streamer(
-            key="webrtc_hd",
-            video_processor_factory=HDVideoProcessor,
-            rtc_configuration=RTC_CONFIG,
-            media_stream_constraints={
-                "video": {
-                    "width": {"ideal": 1920},
-                    "height": {"ideal": 1080},
-                    "frameRate": {"ideal": 30, "max": 60},
-                    "facingMode": "environment",
-                },
-                "audio": False,
-            },
-            async_processing=True,
-        )
-
-        if st.button("📸 Capture frame (HD)", key="btn_capture_webrtc"):
-            if webrtc_ctx.video_processor is None:
-                st.warning("Camera is not ready yet.")
-            else:
-                bgr = webrtc_ctx.video_processor.get_latest_bgr()
-                if bgr is None:
-                    st.warning("No frame received yet. Please wait a moment and try again.")
-                else:
-                    rgb = bgr[:, :, ::-1]
-                    img = Image.fromarray(rgb)
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=95)
-                    st.session_state.webrtc_captured_bytes = buf.getvalue()
-                    st.session_state.webrtc_captured_mime = "image/jpeg"
-                    st.success("Captured. Select distance below and press Save.")
-
-        if st.session_state.webrtc_captured_bytes is not None:
-            image_bytes = st.session_state.webrtc_captured_bytes
-            mimetype = st.session_state.webrtc_captured_mime or "image/jpeg"
-
-            img, w, h = try_get_image_size(image_bytes)
-            if img is not None:
-                st.image(img, use_container_width=True)
-                c1, c2 = st.columns(2)
-                c1.metric("Width", f"{w} px")
-                c2.metric("Height", f"{h} px")
-
-            height_label, height_tag = height_picker_ui("webrtc")
-
-            if st.button(f"✅ Save this frame ({height_label})", key="btn_save_webrtc_frame"):
-                save_shot_for_height(height_tag, image_bytes, mimetype, "webrtc.jpg")
-                st.success(f"Saved for {height_label}.")
-else:
-    st.info("WebRTC (HD Capture) is hidden because streamlit-webrtc is not installed on the server.")
-
 # -------------------------
-# Upload ALL 3 distances
+# Bottom: 3-shot status (checkbox style) + Upload ALL 3
 # -------------------------
 st.write("---")
+
+st.subheader("📏 3-shot Set Status (checkbox)")
+
+def checkbox_line(label: str, tag: str) -> str:
+    done = tag in st.session_state.height_captures
+    box = "[x]" if done else "[ ]"
+    return f"- {box} **{label}**"
+
+st.markdown("\n".join([
+    checkbox_line("1 m", "H1m"),
+    checkbox_line("50 cm", "H50cm"),
+    checkbox_line("20 cm", "H20cm"),
+]))
+
+col_reset, col_tip = st.columns([1, 3])
+with col_reset:
+    if st.button("Reset this 3-shot set", key="btn_reset_bottom"):
+        st.session_state.capture_set_ts = None
+        st.session_state.height_captures = {}
+        st.success("Reset completed.")
+with col_tip:
+    st.caption("Save one photo for each distance, then upload all 3 together below.")
+
 st.subheader("☁️ Upload ALL 3 distances to Google Drive")
 
 missing = [tag for (_, tag) in HEIGHTS if tag not in st.session_state.height_captures]
@@ -442,8 +347,6 @@ else:
                 # Reset for next set
                 st.session_state.capture_set_ts = None
                 st.session_state.height_captures = {}
-                st.session_state.webrtc_captured_bytes = None
-                st.session_state.webrtc_captured_mime = None
 
             except Exception as e:
                 st.error(f"❌ Upload failed: {e}")
