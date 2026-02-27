@@ -119,22 +119,55 @@ def upload_bytes_to_drive(image_bytes: bytes, mimetype: str, filename: str):
 with st.expander("Turf Setting", expanded=True):
     turf_setting = st.selectbox(
         "Select Turf Setting",
-        ["Putting green", "Tees", "Fairway", "Rough"],
+        ["Putting Green", "Tees", "Fairway", "Rough"],
         index=0
     )
 
 with st.expander("Turfgrass Type", expanded=True):
     grass_type = st.selectbox(
         "Select Grass Type",
-        ["Bent", "KB", "Bermuda", "Poa", "Other"],
+        ["Bentgrass", "Bermuda", "Poa annua", "Ryegrass", "Zoysiagrass", "Other"],
         index=0
     )
     grass_other = ""
     if grass_type == "Other":
         grass_other = st.text_input("If Other, type grass name (optional)", value="")
 
+WEED_OPTIONS = [
+    "Annual bluegrass",
+    "Rough bluegrass",
+    "Cheatgrass",
+    "Crabgrass",
+    "Goosegrass",
+    "Creeping bentgrass (in bermuda/zoysia)",
+    "Bermudagrass (in cool-season turf)",
+    "Mouse-ear chickweed",
+    "Henbit",
+    "Shepherd’s purse",
+    "Prostrate spurge",
+    "prostrate knotweed",
+    "White clover",
+    "Dandelion",
+    "Plantain",
+    "Oxalis",
+    "Yellow nutsedge",
+    "Green kyllinga",
+    "Silvery thread moss",
+    "Algal crusts",
+    "Other",
+]
+
 with st.expander("Weed Name", expanded=True):
-    weed_name = st.text_input("Type Weed Name", value="", placeholder="e.g., crabgrass")
+    weed_selected = st.selectbox("Select Weed Name", WEED_OPTIONS, index=0)
+    weed_other = ""
+    if weed_selected == "Other":
+        weed_other = st.text_input("If Other, type weed name", value="", placeholder="e.g., unknown_weed")
+
+# 파일명에 들어갈 weed_name 최종값
+if weed_selected == "Other" and weed_other.strip():
+    weed_name = f"Other_{weed_other.strip()}"
+else:
+    weed_name = weed_selected
 
 st.write("---")
 
