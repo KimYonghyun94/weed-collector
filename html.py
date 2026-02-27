@@ -8,6 +8,7 @@ import io
 import re
 import os
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # ==========================================
 # Settings
@@ -33,7 +34,7 @@ st.markdown("""
 st.markdown(
     """
     **Quick Guide**
-    1) Choose *Turf Setting*, *Turfgrass Type*, and *Weed Name*  
+    1) Choose *Time Zone*, *Turf Setting*, *Turfgrass Type*, and *Weed Name*  
     2) Capture or upload photo(s)  
     3) For each photo, select the distance (1 m / 50 cm / 20 cm) and press **Save**  
     4) After saving all 3 distances, press **Upload ALL 3 images**
@@ -50,9 +51,19 @@ HEIGHTS = [
 ]
 HEIGHT_MAP = dict(HEIGHTS)
 
+# US time zone options (handles DST automatically)
+TZ_OPTIONS = {
+    "EST": "America/New_York",
+    "CST": "America/Chicago",
+    "MST": "America/Denver",
+    "PST": "America/Los_Angeles",
+}
+
 def init_session():
     if "capture_set_ts" not in st.session_state:
         st.session_state.capture_set_ts = None  # fixed timestamp for the 3-shot set
+    if "capture_set_tz" not in st.session_state:
+        st.session_state.capture_set_tz = None  # fixed tz for the 3-shot set
     if "height_captures" not in st.session_state:
         st.session_state.height_captures = {}   # {height_tag: {bytes, mimetype, original_name}}
 
@@ -91,6 +102,9 @@ def guess_ext(mimetype: str, original_name: Optional[str] = None) -> str:
         if ext:
             return ext.lstrip(".").lower()
     return "jpg"
+
+def now_timestamp_str(tz_name: str) -> str:
+    return datetime.now(ZoneInfo(tz_name)).strftime("%Y%m%d_%H%M%S")
 
 def make_filename(
     turf_setting: str,
@@ -137,6 +151,10 @@ def upload_bytes_to_drive(image_bytes: bytes, mimetype: str, filename: str):
 # -------------------------
 # Options UI
 # -------------------------
+with st.expander("Time Zone", expanded=True):
+    tz_code = st.selectbox("Select Time Zone", list(TZ_OPTIONS.keys()), index=0)
+    tz_name = TZ_OPTIONS[tz_code]
+
 with st.expander("Turf Setting", expanded=True):
     turf_setting = st.selectbox(
         "Select Turf Setting",
@@ -194,11 +212,12 @@ st.write("---")
 # -------------------------
 # Save helper + distance picker (below images)
 # -------------------------
-def save_shot_for_height(height_tag: str, image_bytes: bytes, mimetype: str, original_name: Optional[str]):
-    # Fix set timestamp on first save
+def save_shot_for_height(height_tag: str, image_bytes: bytes, mimetype: str, original_name: Optional[str], tz_name: str):
+    # Fix set timestamp & tz on first save (DST handled by ZoneInfo)
     if st.session_state.capture_set_ts is None:
-        st.session_state.capture_set_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Overwrites if you save another photo to the same distance
+        st.session_state.capture_set_tz = tz_name
+        st.session_state.capture_set_ts = now_timestamp_str(tz_name)
+
     st.session_state.height_captures[height_tag] = {
         "bytes": image_bytes,
         "mimetype": mimetype,
@@ -216,7 +235,7 @@ def height_picker_ui(key_suffix: str):
     return chosen, HEIGHT_MAP[chosen]
 
 # -------------------------
-# Tabs (WebRTC removed)
+# Tabs
 # -------------------------
 tabs = st.tabs(["📷 Streamlit Camera", "⬆️ Upload (High-res)"])
 
@@ -242,7 +261,7 @@ with tabs[0]:
         height_label, height_tag = height_picker_ui("cam")
 
         if st.button(f"✅ Save this shot ({height_label})", key="btn_save_cam"):
-            save_shot_for_height(height_tag, image_bytes, mimetype, cam_file.name)
+            save_shot_for_height(height_tag, image_bytes, mimetype, cam_file.name, tz_name)
             st.success(f"Saved for {height_label}.")
 
 # 2) file_uploader (multi-select)
@@ -260,7 +279,7 @@ with tabs[1]:
         if len(up_files) == 3:
             if st.button("✅ Auto-assign by order: 1 m → 50 cm → 20 cm", key="btn_auto_assign_3"):
                 for (lbl, tag), f in zip(HEIGHTS, up_files):
-                    save_shot_for_height(tag, f.getvalue(), f.type or "application/octet-stream", f.name)
+                    save_shot_for_height(tag, f.getvalue(), f.type or "application/octet-stream", f.name, tz_name)
                 st.success("Saved 3 photos to the 3-shot set by order (1 m → 50 cm → 20 cm).")
 
         # Manual mapping per file
@@ -281,7 +300,7 @@ with tabs[1]:
                 height_label, height_tag = height_picker_ui(f"upload_{i}")
 
                 if st.button(f"✅ Save this file ({height_label})", key=f"btn_save_upload_{i}"):
-                    save_shot_for_height(height_tag, image_bytes, mimetype, f.name)
+                    save_shot_for_height(height_tag, image_bytes, mimetype, f.name, tz_name)
                     st.success(f"Saved: {f.name} → {height_label}")
 
 # -------------------------
@@ -306,6 +325,7 @@ col_reset, col_tip = st.columns([1, 3])
 with col_reset:
     if st.button("Reset this 3-shot set", key="btn_reset_bottom"):
         st.session_state.capture_set_ts = None
+        st.session_state.capture_set_tz = None
         st.session_state.height_captures = {}
         st.success("Reset completed.")
 with col_tip:
@@ -322,7 +342,8 @@ else:
     if st.button("🚀 Upload ALL 3 images now", key="btn_upload_all3"):
         with st.spinner("Uploading 3 images to Google Drive... ☁️"):
             try:
-                set_ts = st.session_state.capture_set_ts or datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Keep the set timestamp consistent; if missing, use selected tz
+                set_ts = st.session_state.capture_set_ts or now_timestamp_str(st.session_state.capture_set_tz or tz_name)
 
                 uploaded_files = []
                 for lbl, tag in HEIGHTS:
@@ -346,6 +367,7 @@ else:
 
                 # Reset for next set
                 st.session_state.capture_set_ts = None
+                st.session_state.capture_set_tz = None
                 st.session_state.height_captures = {}
 
             except Exception as e:
