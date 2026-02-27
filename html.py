@@ -6,6 +6,11 @@ from datetime import datetime
 from PIL import Image
 import io
 import re
+import os
+import threading
+
+# WebRTC (HD capture)
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ==========================================
 # 설정 부분
@@ -28,12 +33,14 @@ st.markdown("""
     <hr>
 """, unsafe_allow_html=True)
 
+
 def authenticate_drive():
     gcp_info = st.secrets["gcp_service_account"]
     creds = service_account.Credentials.from_service_account_info(
         gcp_info, scopes=["https://www.googleapis.com/auth/drive"]
     )
-    return build('drive', 'v3', credentials=creds)
+    return build("drive", "v3", credentials=creds)
+
 
 def slugify(text: str, max_len: int = 40) -> str:
     if text is None:
@@ -44,6 +51,67 @@ def slugify(text: str, max_len: int = 40) -> str:
     text = text.replace(" ", "_")
     text = re.sub(r"[^A-Za-z0-9_\-]+", "", text)
     return text[:max_len] if len(text) > max_len else text
+
+
+def guess_ext(mimetype: str, original_name: str | None = None) -> str:
+    mt = (mimetype or "").lower()
+    if "jpeg" in mt or "jpg" in mt:
+        return "jpg"
+    if "png" in mt:
+        return "png"
+    if "heic" in mt or "heif" in mt:
+        return "heic"
+    if original_name:
+        _, ext = os.path.splitext(original_name)
+        if ext:
+            return ext.lstrip(".").lower()
+    return "jpg"
+
+
+def make_filename(turf_setting: str, grass_type: str, grass_other: str, weed_name: str,
+                  mimetype: str, original_name: str | None = None) -> str:
+    turf_part = slugify(turf_setting.replace(" ", ""))
+
+    if grass_type == "Other" and grass_other.strip():
+        grass_part = slugify(f"Other_{grass_other}")
+    else:
+        grass_part = slugify(grass_type)
+
+    weed_part = slugify(weed_name)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ext = guess_ext(mimetype, original_name)
+    return f"{turf_part}_{grass_part}_{weed_part}_{timestamp}.{ext}"
+
+
+def try_get_image_size(image_bytes: bytes):
+    """PIL로 열릴 때만 해상도 표시. (HEIC 등은 환경에 따라 실패 가능)"""
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        return img, img.size[0], img.size[1]
+    except Exception:
+        return None, None, None
+
+
+def upload_bytes_to_drive(image_bytes: bytes, mimetype: str, filename: str):
+    service = authenticate_drive()
+    buffer = io.BytesIO(image_bytes)
+    buffer.seek(0)
+
+    file_metadata = {
+        "name": filename,
+        "parents": [PARENT_FOLDER_ID],
+    }
+
+    media = MediaIoBaseUpload(buffer, mimetype=mimetype)
+
+    service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+
 
 # -------------------------
 # 옵션 UI
@@ -70,71 +138,159 @@ with st.expander("Weed Name", expanded=True):
 
 st.write("---")
 
-# -------------------------
-# 카메라 UI 중앙 정렬
-# -------------------------
-col1, col2, col3 = st.columns([1, 4, 1])
-with col2:
-    img_file = st.camera_input("📸 (Click to Capture)")
 
 # -------------------------
-# 사진이 찍히면 실행
+# WebRTC Video Processor
 # -------------------------
-if img_file is not None:
-    # 이미지 열기 (정보 표시용)
-    image = Image.open(img_file)
-    width, height = image.size
+class HDVideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._latest_bgr = None  # numpy array (bgr24)
 
-    st.write("---")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric(label="Width", value=f"{width} px")
-    with c2:
-        st.metric(label="Height", value=f"{height} px")
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        with self._lock:
+            self._latest_bgr = img
+        return frame
 
-    # 파일명 구성 요소
-    turf_part = slugify(turf_setting.replace(" ", ""))
+    def get_latest_bgr(self):
+        with self._lock:
+            if self._latest_bgr is None:
+                return None
+            return self._latest_bgr.copy()
 
-    if grass_type == "Other" and grass_other.strip():
-        grass_part = slugify(f"Other_{grass_other}")
-    else:
-        grass_part = slugify(grass_type)
 
-    weed_part = slugify(weed_name)
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
-    # 원본 mimetype 기준으로 확장자 결정 (대부분 image/jpeg)
-    mimetype = img_file.type or "image/jpeg"
-    ext = "jpg" if "jpeg" in mimetype else ("png" if "png" in mimetype else "jpg")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{turf_part}_{grass_part}_{weed_part}_{timestamp}.{ext}"
+# -------------------------
+# 입력 방식: 탭 3개
+# -------------------------
+tab_cam, tab_upload, tab_webrtc = st.tabs(
+    ["📷 Streamlit Camera", "⬆️ Upload (High-res)", "🎥 WebRTC (HD Capture)"]
+)
 
-    st.info(f"📄 File name preview: **{filename}**")
+# 1) Streamlit 기본 camera_input
+with tab_cam:
+    col1, col2, col3 = st.columns([1, 4, 1])
+    with col2:
+        cam_file = st.camera_input("📸 (Click to Capture)")
 
-    with st.spinner("구글 드라이브로 전송 중입니다... ☁️"):
-        try:
-            service = authenticate_drive()
+    if cam_file is not None:
+        image_bytes = cam_file.getvalue()
+        mimetype = cam_file.type or "image/jpeg"
+        filename = make_filename(turf_setting, grass_type, grass_other, weed_name, mimetype, cam_file.name)
 
-            # ✅ 핵심: 원본 바이트 그대로 업로드 (재압축/리사이즈 없음)
-            buffer = io.BytesIO(img_file.getvalue())
-            buffer.seek(0)
+        st.info(f"📄 File name preview: **{filename}**")
 
-            file_metadata = {
-                "name": filename,
-                "parents": [PARENT_FOLDER_ID],
-            }
+        img, w, h = try_get_image_size(image_bytes)
+        if img is not None:
+            st.image(img, use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric("Width", f"{w} px")
+            c2.metric("Height", f"{h} px")
+        else:
+            st.warning("미리보기/해상도 표시가 이 파일 형식에서는 지원되지 않을 수 있어요. 업로드는 가능합니다.")
 
-            media = MediaIoBaseUpload(buffer, mimetype=mimetype)
+        if st.button("☁️ Upload to Google Drive", key="btn_upload_cam"):
+            with st.spinner("구글 드라이브로 전송 중입니다... ☁️"):
+                try:
+                    upload_bytes_to_drive(image_bytes, mimetype, filename)
+                    st.success(f"✅ Save Done! (File: {filename})")
+                except Exception as e:
+                    st.error(f"❌ Fail: {e}")
 
-            service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields="id",
-                supportsAllDrives=True
-            ).execute()
+# 2) 고해상도 원본 업로드: file_uploader
+with tab_upload:
+    up_file = st.file_uploader(
+        "Upload a photo (Phone camera original recommended)",
+        type=None,  # 모든 확장자 허용(HEIC 등도)
+        accept_multiple_files=False
+    )
 
-            st.success(f"✅ Save Done! (File: {filename})")
-            # ❌ st.balloons() 제거
+    if up_file is not None:
+        image_bytes = up_file.getvalue()
+        mimetype = up_file.type or "application/octet-stream"
+        filename = make_filename(turf_setting, grass_type, grass_other, weed_name, mimetype, up_file.name)
 
-        except Exception as e:
-            st.error(f"❌ Fail: {e}")
+        st.info(f"📄 File name preview: **{filename}**")
+
+        img, w, h = try_get_image_size(image_bytes)
+        if img is not None:
+            st.image(img, use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric("Width", f"{w} px")
+            c2.metric("Height", f"{h} px")
+        else:
+            st.warning("미리보기/해상도 표시가 이 파일 형식에서는 지원되지 않을 수 있어요(예: HEIC). 업로드는 가능합니다.")
+
+        if st.button("☁️ Upload to Google Drive", key="btn_upload_file"):
+            with st.spinner("구글 드라이브로 전송 중입니다... ☁️"):
+                try:
+                    upload_bytes_to_drive(image_bytes, mimetype, filename)
+                    st.success(f"✅ Save Done! (File: {filename})")
+                except Exception as e:
+                    st.error(f"❌ Fail: {e}")
+
+# 3) WebRTC HD 캡처
+with tab_webrtc:
+    st.caption("HD(ideal 1920x1080)로 카메라를 요청합니다. 브라우저/디바이스가 지원하는 범위 내에서 적용돼요.")
+
+    webrtc_ctx = webrtc_streamer(
+        key="webrtc_hd",
+        video_processor_factory=HDVideoProcessor,
+        rtc_configuration=RTC_CONFIG,
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 1920},
+                "height": {"ideal": 1080},
+                "frameRate": {"ideal": 30, "max": 60},
+                "facingMode": "environment",
+            },
+            "audio": False,
+        },
+        async_processing=True,
+    )
+
+    # 캡처 버튼 -> 세션에 저장
+    if st.button("📸 Capture frame (HD)", key="btn_capture_webrtc"):
+        if webrtc_ctx.video_processor is None:
+            st.warning("카메라가 아직 시작되지 않았어요.")
+        else:
+            bgr = webrtc_ctx.video_processor.get_latest_bgr()
+            if bgr is None:
+                st.warning("아직 프레임이 없습니다. 카메라가 뜬 뒤 잠시 후 다시 눌러주세요.")
+            else:
+                # BGR -> RGB (numpy slicing)
+                rgb = bgr[:, :, ::-1]
+                img = Image.fromarray(rgb)
+
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=95)
+                st.session_state["webrtc_captured_bytes"] = buf.getvalue()
+                st.session_state["webrtc_captured_mime"] = "image/jpeg"
+
+    # 캡처된 이미지가 있으면 미리보기 + 업로드
+    if "webrtc_captured_bytes" in st.session_state:
+        image_bytes = st.session_state["webrtc_captured_bytes"]
+        mimetype = st.session_state.get("webrtc_captured_mime", "image/jpeg")
+        filename = make_filename(turf_setting, grass_type, grass_other, weed_name, mimetype, "webrtc.jpg")
+
+        st.info(f"📄 File name preview: **{filename}**")
+
+        img, w, h = try_get_image_size(image_bytes)
+        if img is not None:
+            st.image(img, use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric("Width", f"{w} px")
+            c2.metric("Height", f"{h} px")
+
+        if st.button("☁️ Upload to Google Drive", key="btn_upload_webrtc"):
+            with st.spinner("구글 드라이브로 전송 중입니다... ☁️"):
+                try:
+                    upload_bytes_to_drive(image_bytes, mimetype, filename)
+                    st.success(f"✅ Save Done! (File: {filename})")
+                except Exception as e:
+                    st.error(f"❌ Fail: {e}")
